@@ -1,8 +1,10 @@
+⚠️ demo.png missing — run the CLI and save screenshot to this directory as demo.png
+
+---
+
 # docs/
 
-`demo.png` will be added here.
-
-To generate it yourself, run:
+To generate `demo.png`:
 
 ```bash
 uv run remit compare --amount 1000 --from GBP --to CNY
