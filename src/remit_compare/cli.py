@@ -1,57 +1,83 @@
 import asyncio
 
 import typer
+from rich.console import Console
+from rich.table import Table
 
-from remit_compare.core import ProviderError
+from remit_compare.core import ProviderError, Quote
+from remit_compare.providers.paypal import PayPalProvider
+from remit_compare.providers.revolut import RevolutProvider
 from remit_compare.providers.wise import WiseProvider
 
 app = typer.Typer(help="Compare cross-border remittance fees across providers.")
+console = Console()
 
-_PROVIDERS = [WiseProvider()]
+_PROVIDERS = [WiseProvider(), RevolutProvider(), PayPalProvider()]
 
 
-async def _fetch_all(amount: float, from_currency: str, to_currency: str) -> list:
-    results = []
-    for p in _PROVIDERS:
-        try:
-            results.append(await p.get_quote(amount, from_currency, to_currency))
-        except ProviderError as e:
-            results.append(e)
-    return results
+async def _fetch_all(
+    amount: float, from_currency: str, to_currency: str
+) -> list[Quote | ProviderError]:
+    tasks = [p.get_quote(amount, from_currency, to_currency) for p in _PROVIDERS]
+    raw = await asyncio.gather(*tasks, return_exceptions=True)
+    return [
+        r if isinstance(r, (Quote, ProviderError)) else ProviderError("unknown", str(r))
+        for r in raw
+    ]
 
 
 @app.command()
 def compare(
-    amount: float = typer.Argument(..., help="Amount to send"),
+    amount: float = typer.Option(..., "--amount", help="Amount to send"),
     from_currency: str = typer.Option("USD", "--from", help="Send currency"),
     to_currency: str = typer.Option("CNY", "--to", help="Receive currency"),
 ) -> None:
     """Compare remittance quotes from all available providers."""
-    typer.echo(f"Fetching quotes for {amount} {from_currency.upper()} → {to_currency.upper()}...\n")
+    src = from_currency.upper()
+    dst = to_currency.upper()
+    console.print(f"\nFetching quotes: [bold]{amount} {src} → {dst}[/bold]\n")
 
     results = asyncio.run(_fetch_all(amount, from_currency, to_currency))
 
-    fmt = "{:<12} {:>12} {:>8} {:>10} {:>12} {:>8}"
-    typer.echo(fmt.format("Provider", "Receive", "Rate", "Fee", "Total Cost", "Arrival"))
-    typer.echo("-" * 68)
-    for r in results:
-        if isinstance(r, ProviderError):
-            typer.echo(f"  ERROR: {r}")
-        else:
-            typer.echo(fmt.format(
-                r.provider_name,
-                f"{r.receive_amount:.2f} {r.receive_currency}",
-                f"{r.exchange_rate:.4f}",
-                f"{r.fee:.2f} {r.send_currency}",
-                f"{r.total_cost_in_send_currency:.2f} {r.send_currency}",
-                f"~{r.estimated_arrival_hours}h",
-            ))
+    quotes = sorted(
+        [r for r in results if isinstance(r, Quote)],
+        key=lambda q: q.total_cost_in_send_currency,
+    )
+    errors = [r for r in results if isinstance(r, ProviderError)]
+
+    table = Table(show_header=True, header_style="bold cyan", show_lines=False)
+    table.add_column("Provider", style="bold", min_width=10)
+    table.add_column("Fee", justify="right", min_width=12)
+    table.add_column("Exchange Rate", justify="right", min_width=14)
+    table.add_column("You Receive", justify="right", min_width=16)
+    table.add_column("Total Cost", justify="right", min_width=14)
+    table.add_column("ETA", justify="right", min_width=8)
+
+    for q in quotes:
+        table.add_row(
+            q.provider_name,
+            f"{q.fee:.2f} {q.send_currency}",
+            f"{q.exchange_rate:.4f}",
+            f"{q.receive_amount:,.2f} {q.receive_currency}",
+            f"{q.total_cost_in_send_currency:.2f} {q.send_currency}",
+            f"~{q.estimated_arrival_hours}h",
+        )
+
+    for e in errors:
+        table.add_row(
+            f"[red]{e.provider}[/red]",
+            f"[red]Error: {str(e)[:50]}[/red]",
+            "", "", "", "",
+        )
+
+    console.print(table)
 
 
 @app.command()
 def providers() -> None:
     """List all available remittance providers."""
-    typer.echo("Available providers: Wise")
+    for p in _PROVIDERS:
+        console.print(f"  • {p.__class__.__name__}")
 
 
 if __name__ == "__main__":
