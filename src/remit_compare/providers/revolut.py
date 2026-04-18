@@ -1,23 +1,29 @@
-import httpx
+from datetime import UTC, datetime
+from decimal import Decimal
 
-from remit_compare.core import BaseProvider, ProviderError, Quote
+from remit_compare.core import BaseProvider, ProviderError, Quote, get_mid_rate
 
-# Frankfurter provides ECB/interbank rates; no auth required
-_RATES_API_URL = "https://api.frankfurter.app/latest?from={from_currency}&to={to_currency}"
 _PROVIDER_NAME = "Revolut"
 
-# Revolut Standard plan (published fee schedule, 2024-2025)
-#   - Exchange rate: interbank rate + ~0.5% spread on weekdays
-#   - Transfer fee: £0 for most corridors on Standard plan
-_FX_SPREAD = 0.005   # 0.5% above mid-market
-_TRANSFER_FEE = 0.0  # Standard plan weekday domestic/SEPA; SWIFT may vary
-_ARRIVAL_HOURS = 48  # Revolut international: 1-3 business days
+# Source: revolut.com/en-GB/legal/fees — Standard personal plan, last verified 2026-04-18
+# Weekday spread: 0.5% above mid-market rate (Mon–Fri)
+# Weekend spread: 1.0% above mid-market rate (Sat–Sun)
+# Transfer fee: £0 for most corridors on Standard plan
+_WEEKDAY_SPREAD = Decimal("0.005")
+_WEEKEND_SPREAD = Decimal("0.010")
+_TRANSFER_FEE = 0.0
+_ARRIVAL_HOURS = 48  # 1–3 business days; 48 h is typical
+
+
+def _fx_spread(now: datetime) -> Decimal:
+    """Return the applicable spread based on the day of the week (UTC)."""
+    return _WEEKEND_SPREAD if now.weekday() >= 5 else _WEEKDAY_SPREAD
 
 
 class RevolutProvider(BaseProvider):
-    def __init__(self, client: httpx.AsyncClient | None = None) -> None:
-        self._client = client
-        self._owns_client = client is None
+    def __init__(self, *, _now: datetime | None = None) -> None:
+        # _now is injected in tests to avoid weekday-flakiness
+        self._now = _now
 
     async def get_quote(
         self,
@@ -28,34 +34,19 @@ class RevolutProvider(BaseProvider):
         if send_amount <= 0:
             raise ValueError(f"send_amount must be positive, got {send_amount}")
 
-        url = _RATES_API_URL.format(
-            from_currency=send_currency.upper(),
-            to_currency=receive_currency.upper(),
-        )
-        client = self._client or httpx.AsyncClient()
         try:
-            response = await client.get(url, follow_redirects=True)
-        except httpx.RequestError as exc:
-            raise ProviderError(_PROVIDER_NAME, f"Network error: {exc}") from exc
-        finally:
-            if self._owns_client and not self._client:
-                await client.aclose()
+            mid_rate_d = await get_mid_rate(send_currency, receive_currency)
+        except ProviderError as exc:
+            raise ProviderError(_PROVIDER_NAME, str(exc)) from exc
 
-        if response.status_code != 200:
-            raise ProviderError(
-                _PROVIDER_NAME,
-                f"HTTP {response.status_code}: {response.text[:200]}",
-            )
+        now = self._now or datetime.now(UTC)
+        spread = _fx_spread(now)
+        effective_rate = float(mid_rate_d * (1 - spread))
+        mid_rate = float(mid_rate_d)
 
-        try:
-            data = response.json()
-            mid_rate: float = float(data["rates"][receive_currency.upper()])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ProviderError(_PROVIDER_NAME, f"Unexpected response format: {exc}") from exc
-
-        # Revolut applies a small spread on top of mid-market
-        effective_rate = mid_rate * (1 - _FX_SPREAD)
-        receive_amount = round((send_amount - _TRANSFER_FEE) * effective_rate, 2)
+        receive_amount = round(send_amount * effective_rate, 2)
+        total_cost = send_amount + _TRANSFER_FEE
+        markup = total_cost / (receive_amount / mid_rate) - 1
 
         return Quote(
             provider_name=_PROVIDER_NAME,
@@ -65,6 +56,8 @@ class RevolutProvider(BaseProvider):
             receive_currency=receive_currency.upper(),
             fee=_TRANSFER_FEE,
             exchange_rate=effective_rate,
-            total_cost_in_send_currency=send_amount + _TRANSFER_FEE,
+            exchange_rate_mid=mid_rate,
+            total_cost_in_send_currency=total_cost,
             estimated_arrival_hours=_ARRIVAL_HOURS,
+            markup_vs_mid_rate=round(markup, 6),
         )

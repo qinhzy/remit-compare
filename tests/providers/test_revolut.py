@@ -1,57 +1,77 @@
+from datetime import UTC, datetime
+from decimal import Decimal
+from unittest.mock import AsyncMock, patch
+
 import pytest
-import pytest_httpx
 
 from remit_compare.core import ProviderError, Quote
-from remit_compare.providers.revolut import _RATES_API_URL, RevolutProvider
+from remit_compare.providers.revolut import (
+    _WEEKDAY_SPREAD,
+    _WEEKEND_SPREAD,
+    RevolutProvider,
+    _fx_spread,
+)
 
-_USD_RATES_URL = _RATES_API_URL.format(from_currency="USD", to_currency="CNY")
+_MID_RATE = Decimal("7.25")
+_PATCH = "remit_compare.providers.revolut.get_mid_rate"
 
-_MOCK_RATES_RESPONSE = {
-    "amount": 1.0,
-    "base": "USD",
-    "date": "2026-04-17",
-    "rates": {"CNY": 7.25},
-}
+_WEEKDAY = datetime(2026, 4, 20, 12, 0, tzinfo=UTC)  # Monday
+_WEEKEND = datetime(2026, 4, 19, 12, 0, tzinfo=UTC)  # Sunday
 
 
 @pytest.fixture
-def provider():
-    return RevolutProvider()
+def weekday_provider():
+    return RevolutProvider(_now=_WEEKDAY)
 
 
-async def test_get_quote_success(httpx_mock: pytest_httpx.HTTPXMock, provider: RevolutProvider):
-    """Normal USD→CNY quote returns correct Quote fields."""
-    httpx_mock.add_response(method="GET", url=_USD_RATES_URL, json=_MOCK_RATES_RESPONSE)
+@pytest.fixture
+def weekend_provider():
+    return RevolutProvider(_now=_WEEKEND)
 
-    quote = await provider.get_quote(1000.0, "USD", "CNY")
 
-    # effective_rate = 7.25 * (1 - 0.005) = 7.2138
-    # receive_amount = (1000 - 0) * 7.2138 = 7213.75
+def test_fx_spread_weekday():
+    assert _fx_spread(_WEEKDAY) == _WEEKDAY_SPREAD
+
+
+def test_fx_spread_weekend():
+    assert _fx_spread(_WEEKEND) == _WEEKEND_SPREAD
+
+
+async def test_get_quote_weekday(weekday_provider: RevolutProvider):
+    """Weekday: 0.5% spread applied, £0 fee, markup ~0.5%."""
+    with patch(_PATCH, new_callable=AsyncMock, return_value=_MID_RATE):
+        quote = await weekday_provider.get_quote(1000.0, "USD", "CNY")
+
+    expected_rate = float(_MID_RATE) * 0.995
     assert isinstance(quote, Quote)
     assert quote.provider_name == "Revolut"
-    assert quote.send_amount == 1000.0
-    assert quote.send_currency == "USD"
-    assert quote.receive_currency == "CNY"
+    assert quote.exchange_rate == pytest.approx(expected_rate)
+    assert quote.exchange_rate_mid == pytest.approx(float(_MID_RATE))
     assert quote.fee == pytest.approx(0.0)
-    assert quote.exchange_rate == pytest.approx(7.25 * 0.995)
-    assert quote.receive_amount == pytest.approx(1000.0 * 7.25 * 0.995, abs=0.01)
+    assert quote.receive_amount == pytest.approx(1000.0 * expected_rate, abs=0.01)
     assert quote.total_cost_in_send_currency == pytest.approx(1000.0)
+    assert quote.markup_vs_mid_rate == pytest.approx(0.005025, rel=1e-2)
     assert quote.estimated_arrival_hours == 48
 
 
-async def test_zero_amount_raises_value_error(provider: RevolutProvider):
-    """send_amount=0 raises ValueError before any HTTP call."""
+async def test_get_quote_weekend(weekend_provider: RevolutProvider):
+    """Weekend: 1% spread applied."""
+    with patch(_PATCH, new_callable=AsyncMock, return_value=_MID_RATE):
+        quote = await weekend_provider.get_quote(1000.0, "USD", "CNY")
+
+    expected_rate = float(_MID_RATE) * 0.99
+    assert quote.exchange_rate == pytest.approx(expected_rate)
+    assert quote.markup_vs_mid_rate == pytest.approx(0.010101, rel=1e-2)
+
+
+async def test_zero_amount_raises_value_error(weekday_provider: RevolutProvider):
+    """send_amount=0 raises ValueError before calling get_mid_rate."""
     with pytest.raises(ValueError, match="send_amount must be positive"):
-        await provider.get_quote(0, "USD", "CNY")
+        await weekday_provider.get_quote(0, "USD", "CNY")
 
 
-async def test_http_500_raises_provider_error(
-    httpx_mock: pytest_httpx.HTTPXMock, provider: RevolutProvider
-):
-    """HTTP 500 from rate API raises ProviderError."""
-    httpx_mock.add_response(
-        method="GET", url=_USD_RATES_URL, status_code=500, text="Internal Server Error"
-    )
-
-    with pytest.raises(ProviderError, match=r"\[Revolut\].*500"):
-        await provider.get_quote(100.0, "USD", "CNY")
+async def test_fx_error_wrapped_as_provider_error(weekday_provider: RevolutProvider):
+    """ProviderError from get_mid_rate is re-raised under Revolut's name."""
+    with patch(_PATCH, new_callable=AsyncMock, side_effect=ProviderError("Frankfurter", "timeout")):
+        with pytest.raises(ProviderError, match=r"\[Revolut\]"):
+            await weekday_provider.get_quote(100.0, "USD", "CNY")

@@ -41,7 +41,7 @@ def compare(
 
     quotes = sorted(
         [r for r in results if isinstance(r, Quote)],
-        key=lambda q: q.total_cost_in_send_currency,
+        key=lambda q: q.markup_vs_mid_rate,
     )
     errors = [r for r in results if isinstance(r, ProviderError)]
 
@@ -51,23 +51,26 @@ def compare(
     table.add_column("Exchange Rate", justify="right", min_width=14)
     table.add_column("You Receive", justify="right", min_width=16)
     table.add_column("Total Cost", justify="right", min_width=14)
+    table.add_column("vs Mid-Rate", justify="right", min_width=12)
     table.add_column("ETA", justify="right", min_width=8)
 
     for q in quotes:
+        markup_pct = f"{q.markup_vs_mid_rate * 100:.2f}%"
         table.add_row(
             q.provider_name,
             f"{q.fee:.2f} {q.send_currency}",
             f"{q.exchange_rate:.4f}",
             f"{q.receive_amount:,.2f} {q.receive_currency}",
             f"{q.total_cost_in_send_currency:.2f} {q.send_currency}",
+            markup_pct,
             f"~{q.estimated_arrival_hours}h",
         )
 
     for e in errors:
         table.add_row(
             f"[red]{e.provider}[/red]",
-            f"[red]Error: {str(e)[:50]}[/red]",
-            "", "", "", "",
+            f"[red]Error: {str(e)[:45]}[/red]",
+            "", "", "", "", "",
         )
 
     console.print(table)

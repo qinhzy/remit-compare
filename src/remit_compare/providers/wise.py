@@ -1,38 +1,28 @@
-from datetime import UTC, datetime
+from remit_compare.core import BaseProvider, ProviderError, Quote, get_mid_rate
 
-import httpx
-
-from remit_compare.core import BaseProvider, ProviderError, Quote
-
-_API_URL = "https://api.wise.com/v3/quotes"
 _PROVIDER_NAME = "Wise"
 
+# Source: wise.com/gb/pricing/send-money — last verified 2026-04-18
+# Variable fee applies to the full send_amount; fixed fee depends on send currency.
+_VARIABLE_FEE_RATE = 0.0043  # 0.43%
+_FIXED_FEE_BY_CURRENCY: dict[str, float] = {
+    "GBP": 0.23,
+    "USD": 1.00,
+    "EUR": 0.29,
+    "AUD": 0.45,
+    "CAD": 0.50,
+    "SGD": 0.60,
+}
+_FIXED_FEE_DEFAULT = 0.50
+_ARRIVAL_HOURS = 24  # Wise typically 0–2 business days; use 24h as representative
 
-def _arrival_hours(iso_timestamp: str) -> int:
-    estimated = datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00"))
-    delta = estimated - datetime.now(UTC)
-    return max(1, int(delta.total_seconds() / 3600))
 
-
-def _best_option(payment_options: list[dict]) -> dict:
-    """Return the cheapest non-disabled BANK_TRANSFER payIn option."""
-    candidates = [
-        opt for opt in payment_options
-        if not opt.get("disabled", False) and opt.get("payIn") == "BANK_TRANSFER"
-    ]
-    if not candidates:
-        # Fall back to any non-disabled option
-        candidates = [opt for opt in payment_options if not opt.get("disabled", False)]
-    if not candidates:
-        raise ValueError("No enabled payment options in response")
-    return min(candidates, key=lambda o: o["fee"]["total"])
+def _wise_fee(send_amount: float, send_currency: str) -> float:
+    fixed = _FIXED_FEE_BY_CURRENCY.get(send_currency.upper(), _FIXED_FEE_DEFAULT)
+    return round(fixed + send_amount * _VARIABLE_FEE_RATE, 4)
 
 
 class WiseProvider(BaseProvider):
-    def __init__(self, client: httpx.AsyncClient | None = None) -> None:
-        self._client = client
-        self._owns_client = client is None
-
     async def get_quote(
         self,
         send_amount: float,
@@ -42,36 +32,17 @@ class WiseProvider(BaseProvider):
         if send_amount <= 0:
             raise ValueError(f"send_amount must be positive, got {send_amount}")
 
-        payload = {
-            "sourceCurrency": send_currency.upper(),
-            "targetCurrency": receive_currency.upper(),
-            "sourceAmount": send_amount,
-        }
-
-        client = self._client or httpx.AsyncClient()
         try:
-            response = await client.post(_API_URL, json=payload)
-        except httpx.RequestError as exc:
-            raise ProviderError(_PROVIDER_NAME, f"Network error: {exc}") from exc
-        finally:
-            if self._owns_client and not self._client:
-                await client.aclose()
+            mid_rate_d = await get_mid_rate(send_currency, receive_currency)
+        except ProviderError as exc:
+            raise ProviderError(_PROVIDER_NAME, str(exc)) from exc
 
-        if response.status_code != 200:
-            raise ProviderError(
-                _PROVIDER_NAME,
-                f"HTTP {response.status_code}: {response.text[:200]}",
-            )
-
-        try:
-            data = response.json()
-            rate: float = float(data["rate"])
-            opt = _best_option(data["paymentOptions"])
-            fee: float = float(opt["fee"]["total"])
-            receive_amount: float = float(opt["targetAmount"])
-            arrival_hours = _arrival_hours(opt["estimatedDelivery"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ProviderError(_PROVIDER_NAME, f"Unexpected response format: {exc}") from exc
+        mid_rate = float(mid_rate_d)
+        fee = _wise_fee(send_amount, send_currency)
+        # Wise uses mid-market rate; fee is charged on top of send_amount
+        receive_amount = round(send_amount * mid_rate, 2)
+        total_cost = send_amount + fee
+        markup = total_cost / (receive_amount / mid_rate) - 1  # ≈ fee / send_amount
 
         return Quote(
             provider_name=_PROVIDER_NAME,
@@ -80,7 +51,9 @@ class WiseProvider(BaseProvider):
             receive_amount=receive_amount,
             receive_currency=receive_currency.upper(),
             fee=fee,
-            exchange_rate=rate,
-            total_cost_in_send_currency=send_amount + fee,
-            estimated_arrival_hours=arrival_hours,
+            exchange_rate=mid_rate,
+            exchange_rate_mid=mid_rate,
+            total_cost_in_send_currency=total_cost,
+            estimated_arrival_hours=_ARRIVAL_HOURS,
+            markup_vs_mid_rate=round(markup, 6),
         )
