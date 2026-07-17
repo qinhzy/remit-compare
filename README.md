@@ -76,6 +76,10 @@ uv run remit compare --amount 1000 --from GBP --to CNY
 
 # Compare 500 USD → EUR
 uv run remit compare --amount 500 --from USD --to EUR
+
+# Machine-readable output for scripts and spreadsheets
+uv run remit compare --amount 500 --from USD --to EUR --format json
+uv run remit compare --amount 500 --from USD --to EUR --format csv
 ```
 
 ---
@@ -116,7 +120,7 @@ Known gaps:
 **Features**
 - [ ] 30-day historical markup chart via Frankfurter's dated endpoint (`/YYYY-MM-DD`)
 - [ ] `--watch` mode: re-poll on an interval and alert when a rate improves
-- [ ] `--format json` / `--format csv` output for downstream scripting
+- [x] `--format json` / `--format csv` output for downstream scripting
 - [ ] Lightweight API server mode (FastAPI wrapper)
 
 ---
@@ -125,7 +129,7 @@ Known gaps:
 
 ```bash
 uv sync --extra dev
-uv run pytest -x             # 18 tests across core and all three providers
+uv run pytest -x             # core, CLI, and provider tests
 uv run ruff check src tests  # lint
 ```
 

@@ -1,0 +1,93 @@
+import csv
+import io
+import json
+from unittest.mock import AsyncMock, patch
+
+from typer.testing import CliRunner
+
+from remit_compare.cli import _fetch_provider, app
+from remit_compare.core import BaseProvider, ProviderError, Quote
+
+runner = CliRunner()
+
+
+class InvalidQuoteProvider(BaseProvider):
+    async def get_quote(
+        self,
+        send_amount: float,
+        send_currency: str,
+        receive_currency: str,
+    ) -> Quote:
+        quote = _quote()
+        quote.receive_amount = float("inf")
+        return quote
+
+
+def _quote() -> Quote:
+    return Quote(
+        provider_name="Wise",
+        send_amount=100.0,
+        send_currency="USD",
+        receive_amount=725.0,
+        receive_currency="CNY",
+        fee=1.43,
+        exchange_rate=7.25,
+        exchange_rate_mid=7.25,
+        total_cost_in_send_currency=101.43,
+        estimated_arrival_hours=24,
+        markup_vs_mid_rate=0.0143,
+    )
+
+
+def test_compare_json_is_machine_readable() -> None:
+    results = [_quote(), ProviderError("PayPal", "temporarily unavailable")]
+    with patch("remit_compare.cli._fetch_all", new=AsyncMock(return_value=results)):
+        result = runner.invoke(
+            app,
+            ["compare", "--amount", "100", "--from", "usd", "--to", "cny", "--format", "json"],
+        )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["query"]["from_currency"] == "USD"
+    assert payload["quotes"][0]["provider_name"] == "Wise"
+    assert payload["errors"] == [
+        {"provider": "PayPal", "message": "temporarily unavailable"}
+    ]
+
+
+def test_compare_csv_has_success_and_error_rows() -> None:
+    results = [_quote(), ProviderError("PayPal", "temporarily unavailable")]
+    with patch("remit_compare.cli._fetch_all", new=AsyncMock(return_value=results)):
+        result = runner.invoke(app, ["compare", "--amount", "100", "--format", "csv"])
+
+    rows = list(csv.DictReader(io.StringIO(result.stdout)))
+    assert result.exit_code == 0
+    assert [row["status"] for row in rows] == ["ok", "error"]
+    assert rows[1]["provider_name"] == "PayPal"
+
+
+def test_compare_rejects_non_finite_amount() -> None:
+    result = runner.invoke(app, ["compare", "--amount", "nan"])
+
+    assert result.exit_code != 0
+    assert "positive finite number" in result.output
+
+
+def test_compare_returns_nonzero_when_every_provider_fails() -> None:
+    with patch(
+        "remit_compare.cli._fetch_all",
+        new=AsyncMock(return_value=[ProviderError("Wise", "offline")]),
+    ):
+        result = runner.invoke(app, ["compare", "--amount", "100", "--format", "json"])
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["quotes"] == []
+
+
+async def test_fetch_provider_rejects_non_finite_quotes() -> None:
+    result = await _fetch_provider(InvalidQuoteProvider(), 100, "USD", "CNY")
+
+    assert isinstance(result, ProviderError)
+    assert result.provider == "InvalidQuote"
+    assert "invalid non-negative quote value" in result.message
