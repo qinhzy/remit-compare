@@ -21,6 +21,7 @@ console = Console()
 
 _PROVIDERS: list[BaseProvider] = [WiseProvider(), RevolutProvider(), PayPalProvider()]
 _CURRENCY_CODE = re.compile(r"^[A-Z]{3}$")
+_PROVIDER_TIMEOUT_SECONDS = 12.0
 
 
 class OutputFormat(StrEnum):
@@ -33,10 +34,7 @@ async def _fetch_all(
     amount: float, from_currency: str, to_currency: str
 ) -> list[Quote | ProviderError]:
     return await asyncio.gather(
-        *[
-            _fetch_provider(provider, amount, from_currency, to_currency)
-            for provider in _PROVIDERS
-        ]
+        *[_fetch_provider(provider, amount, from_currency, to_currency) for provider in _PROVIDERS]
     )
 
 
@@ -45,10 +43,25 @@ async def _fetch_provider(
     amount: float,
     from_currency: str,
     to_currency: str,
+    *,
+    timeout_seconds: float = _PROVIDER_TIMEOUT_SECONDS,
 ) -> Quote | ProviderError:
     try:
-        quote = await provider.get_quote(amount, from_currency, to_currency)
-        return _validate_quote(quote)
+        quote = await asyncio.wait_for(
+            provider.get_quote(amount, from_currency, to_currency),
+            timeout=timeout_seconds,
+        )
+        return _validate_quote(
+            quote,
+            requested_amount=amount,
+            requested_from_currency=from_currency,
+            requested_to_currency=to_currency,
+        )
+    except TimeoutError:
+        return ProviderError(
+            _provider_name(provider),
+            f"Quote timed out after {timeout_seconds:g} seconds",
+        )
     except ProviderError as exc:
         return exc
     except Exception as exc:
@@ -121,7 +134,11 @@ def _render_table(quotes: list[Quote], errors: list[ProviderError]) -> None:
         table.add_row(
             f"[red]{e.provider}[/red]",
             f"[red]Error: {str(e)[:45]}[/red]",
-            "", "", "", "", "",
+            "",
+            "",
+            "",
+            "",
+            "",
         )
 
     console.print(table)
@@ -141,10 +158,7 @@ def _render_json(
             "to_currency": to_currency,
         },
         "quotes": [asdict(quote) for quote in quotes],
-        "errors": [
-            {"provider": error.provider, "message": error.message}
-            for error in errors
-        ],
+        "errors": [{"provider": error.provider, "message": error.message} for error in errors],
     }
     typer.echo(
         json.dumps(
@@ -206,9 +220,30 @@ def _provider_name(provider: BaseProvider) -> str:
     return provider.__class__.__name__.removesuffix("Provider")
 
 
-def _validate_quote(quote: object) -> Quote:
+def _validate_quote(
+    quote: object,
+    *,
+    requested_amount: float,
+    requested_from_currency: str,
+    requested_to_currency: str,
+) -> Quote:
     if not isinstance(quote, Quote):
         raise TypeError("provider must return a Quote")
+
+    if not isinstance(quote.provider_name, str) or not quote.provider_name.strip():
+        raise ValueError("provider returned an empty provider name")
+
+    quote_from_currency = _normalize_quote_currency(quote.send_currency)
+    quote_to_currency = _normalize_quote_currency(quote.receive_currency)
+    if quote_from_currency != requested_from_currency or quote_to_currency != requested_to_currency:
+        raise ValueError("provider returned a quote for the wrong currency pair")
+    if not math.isclose(
+        quote.send_amount,
+        requested_amount,
+        rel_tol=1e-12,
+        abs_tol=1e-9,
+    ):
+        raise ValueError("provider returned a quote for the wrong send amount")
 
     positive_fields = (quote.send_amount, quote.exchange_rate, quote.exchange_rate_mid)
     non_negative_fields = (
@@ -222,9 +257,22 @@ def _validate_quote(quote: object) -> Quote:
         raise ValueError("provider returned an invalid non-negative quote value")
     if not math.isfinite(quote.markup_vs_mid_rate):
         raise ValueError("provider returned a non-finite markup")
-    if quote.estimated_arrival_hours < 0:
-        raise ValueError("provider returned a negative arrival estimate")
+    if (
+        not isinstance(quote.estimated_arrival_hours, int)
+        or isinstance(quote.estimated_arrival_hours, bool)
+        or quote.estimated_arrival_hours < 0
+    ):
+        raise ValueError("provider returned an invalid arrival estimate")
     return quote
+
+
+def _normalize_quote_currency(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("provider returned a non-string currency code")
+    normalized = value.strip().upper()
+    if not _CURRENCY_CODE.fullmatch(normalized):
+        raise ValueError("provider returned an invalid currency code")
+    return normalized
 
 
 if __name__ == "__main__":

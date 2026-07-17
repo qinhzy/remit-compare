@@ -56,7 +56,7 @@ flowchart LR
 
 > ¹ ×0.995 on weekdays (Mon–Fri); ×0.990 on weekends (Revolut Standard plan).
 
-Provider requests are issued concurrently via `asyncio.gather`. The ECB rate is cached in-process for 5 minutes, so rapid successive calls do not hit the upstream API repeatedly.
+Provider requests are issued concurrently via `asyncio.gather` and each quote has a 12-second deadline, so one stalled integration cannot block the whole comparison. The ECB rate is cached in-process for 5 minutes, so rapid successive calls do not hit the upstream API repeatedly. Provider responses are checked against the requested amount and currency pair before they are ranked or serialized.
 
 ---
 

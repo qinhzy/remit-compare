@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import io
 import json
@@ -20,6 +21,30 @@ class InvalidQuoteProvider(BaseProvider):
     ) -> Quote:
         quote = _quote()
         quote.receive_amount = float("inf")
+        return quote
+
+
+class SlowProvider(BaseProvider):
+    async def get_quote(
+        self,
+        send_amount: float,
+        send_currency: str,
+        receive_currency: str,
+    ) -> Quote:
+        await asyncio.sleep(1)
+        return _quote()
+
+
+class WrongRequestProvider(BaseProvider):
+    async def get_quote(
+        self,
+        send_amount: float,
+        send_currency: str,
+        receive_currency: str,
+    ) -> Quote:
+        quote = _quote()
+        quote.send_amount = send_amount + 1
+        quote.receive_currency = "EUR"
         return quote
 
 
@@ -51,9 +76,7 @@ def test_compare_json_is_machine_readable() -> None:
     payload = json.loads(result.stdout)
     assert payload["query"]["from_currency"] == "USD"
     assert payload["quotes"][0]["provider_name"] == "Wise"
-    assert payload["errors"] == [
-        {"provider": "PayPal", "message": "temporarily unavailable"}
-    ]
+    assert payload["errors"] == [{"provider": "PayPal", "message": "temporarily unavailable"}]
 
 
 def test_compare_csv_has_success_and_error_rows() -> None:
@@ -91,3 +114,25 @@ async def test_fetch_provider_rejects_non_finite_quotes() -> None:
     assert isinstance(result, ProviderError)
     assert result.provider == "InvalidQuote"
     assert "invalid non-negative quote value" in result.message
+
+
+async def test_fetch_provider_times_out_without_blocking_other_quotes() -> None:
+    result = await _fetch_provider(
+        SlowProvider(),
+        100,
+        "USD",
+        "CNY",
+        timeout_seconds=0.001,
+    )
+
+    assert isinstance(result, ProviderError)
+    assert result.provider == "Slow"
+    assert "timed out" in result.message
+
+
+async def test_fetch_provider_rejects_quote_for_a_different_request() -> None:
+    result = await _fetch_provider(WrongRequestProvider(), 100, "USD", "CNY")
+
+    assert isinstance(result, ProviderError)
+    assert result.provider == "WrongRequest"
+    assert "wrong currency pair" in result.message
