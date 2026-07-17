@@ -2,6 +2,7 @@ import asyncio
 import csv
 import io
 import json
+from dataclasses import replace
 from unittest.mock import AsyncMock, patch
 
 from typer.testing import CliRunner
@@ -75,6 +76,9 @@ def test_compare_json_is_machine_readable() -> None:
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["query"]["from_currency"] == "USD"
+    assert payload["query"]["preference"] == "value"
+    assert payload["quotes"][0]["rank"] == 1
+    assert payload["quotes"][0]["recommended"] is True
     assert payload["quotes"][0]["provider_name"] == "Wise"
     assert payload["errors"] == [{"provider": "PayPal", "message": "temporarily unavailable"}]
 
@@ -106,6 +110,34 @@ def test_compare_returns_nonzero_when_every_provider_fails() -> None:
 
     assert result.exit_code == 1
     assert json.loads(result.stdout)["quotes"] == []
+
+
+def test_compare_speed_preference_reorders_quotes() -> None:
+    slow_value = replace(
+        _quote(),
+        provider_name="Value",
+        estimated_arrival_hours=24,
+        markup_vs_mid_rate=0.01,
+    )
+    fast = replace(
+        _quote(),
+        provider_name="Fast",
+        estimated_arrival_hours=1,
+        markup_vs_mid_rate=0.03,
+    )
+    with patch(
+        "remit_compare.cli._fetch_all",
+        new=AsyncMock(return_value=[slow_value, fast]),
+    ):
+        result = runner.invoke(
+            app,
+            ["compare", "--amount", "100", "--prefer", "speed", "--format", "json"],
+        )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["query"]["preference"] == "speed"
+    assert payload["quotes"][0]["provider_name"] == "Fast"
 
 
 async def test_fetch_provider_rejects_non_finite_quotes() -> None:

@@ -58,6 +58,8 @@ flowchart LR
 
 Provider requests are issued concurrently via `asyncio.gather` and each quote has a 12-second deadline, so one stalled integration cannot block the whole comparison. The ECB rate is cached in-process for 5 minutes, so rapid successive calls do not hit the upstream API repeatedly. Provider responses are checked against the requested amount and currency pair before they are ranked or serialized.
 
+The terminal table marks the recommended provider and explains the decision. `value` minimizes all-in markup, `speed` minimizes estimated arrival time, and `balanced` combines normalized cost (65%) and time (35%). JSON and CSV include the same rank, score, and recommendation flag so interactive and automated consumers make the same decision.
+
 ---
 
 ## Quick Start
@@ -76,6 +78,11 @@ uv run remit compare --amount 1000 --from GBP --to CNY
 
 # Compare 500 USD → EUR
 uv run remit compare --amount 500 --from USD --to EUR
+
+# Choose a decision profile
+uv run remit compare --amount 500 --from USD --to EUR --prefer value
+uv run remit compare --amount 500 --from USD --to EUR --prefer speed
+uv run remit compare --amount 500 --from USD --to EUR --prefer balanced
 
 # Machine-readable output for scripts and spreadsheets
 uv run remit compare --amount 500 --from USD --to EUR --format json

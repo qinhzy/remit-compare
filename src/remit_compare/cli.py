@@ -9,9 +9,18 @@ from enum import StrEnum
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
-from remit_compare.core import BaseProvider, ProviderError, Quote
+from remit_compare.core import (
+    BaseProvider,
+    ProviderError,
+    Quote,
+    RankedQuote,
+    RankingPreference,
+    rank_quotes,
+)
 from remit_compare.providers.paypal import PayPalProvider
 from remit_compare.providers.revolut import RevolutProvider
 from remit_compare.providers.wise import WiseProvider
@@ -79,6 +88,12 @@ def compare(
         help="Output format: table, json, or csv",
         case_sensitive=False,
     ),
+    prefer: RankingPreference = typer.Option(
+        RankingPreference.VALUE,
+        "--prefer",
+        help="Recommendation preference: value, speed, or balanced",
+        case_sensitive=False,
+    ),
 ) -> None:
     """Compare remittance quotes from all available providers."""
     if not math.isfinite(amount) or amount <= 0:
@@ -91,25 +106,27 @@ def compare(
 
     results = asyncio.run(_fetch_all(amount, src, dst))
 
-    quotes = sorted(
-        [r for r in results if isinstance(r, Quote)],
-        key=lambda q: q.markup_vs_mid_rate,
-    )
+    ranked_quotes = rank_quotes([r for r in results if isinstance(r, Quote)], prefer)
     errors = [r for r in results if isinstance(r, ProviderError)]
 
     if output_format is OutputFormat.JSON:
-        _render_json(amount, src, dst, quotes, errors)
+        _render_json(amount, src, dst, ranked_quotes, errors, prefer)
     elif output_format is OutputFormat.CSV:
-        _render_csv(quotes, errors)
+        _render_csv(ranked_quotes, errors)
     else:
-        _render_table(quotes, errors)
+        _render_table(ranked_quotes, errors, prefer)
 
-    if not quotes:
+    if not ranked_quotes:
         raise typer.Exit(code=1)
 
 
-def _render_table(quotes: list[Quote], errors: list[ProviderError]) -> None:
+def _render_table(
+    ranked_quotes: list[RankedQuote],
+    errors: list[ProviderError],
+    preference: RankingPreference,
+) -> None:
     table = Table(show_header=True, header_style="bold cyan", show_lines=False)
+    table.add_column("Rank", justify="center", width=6)
     table.add_column("Provider", style="bold", min_width=10)
     table.add_column("Fee", justify="right", min_width=12)
     table.add_column("Exchange Rate", justify="right", min_width=14)
@@ -118,10 +135,12 @@ def _render_table(quotes: list[Quote], errors: list[ProviderError]) -> None:
     table.add_column("vs Mid-Rate", justify="right", min_width=12)
     table.add_column("ETA", justify="right", min_width=8)
 
-    for q in quotes:
+    for ranked in ranked_quotes:
+        q = ranked.quote
         markup_pct = f"{q.markup_vs_mid_rate * 100:.2f}%"
         table.add_row(
-            q.provider_name,
+            "★" if ranked.rank == 1 else str(ranked.rank),
+            f"[bold green]{q.provider_name}[/bold green]" if ranked.rank == 1 else q.provider_name,
             f"{q.fee:.2f} {q.send_currency}",
             f"{q.exchange_rate:.4f}",
             f"{q.receive_amount:,.2f} {q.receive_currency}",
@@ -132,6 +151,7 @@ def _render_table(quotes: list[Quote], errors: list[ProviderError]) -> None:
 
     for e in errors:
         table.add_row(
+            "—",
             f"[red]{e.provider}[/red]",
             f"[red]Error: {str(e)[:45]}[/red]",
             "",
@@ -142,22 +162,34 @@ def _render_table(quotes: list[Quote], errors: list[ProviderError]) -> None:
         )
 
     console.print(table)
+    if ranked_quotes:
+        _render_recommendation(ranked_quotes, preference)
 
 
 def _render_json(
     amount: float,
     from_currency: str,
     to_currency: str,
-    quotes: list[Quote],
+    ranked_quotes: list[RankedQuote],
     errors: list[ProviderError],
+    preference: RankingPreference,
 ) -> None:
     payload = {
         "query": {
             "amount": amount,
             "from_currency": from_currency,
             "to_currency": to_currency,
+            "preference": preference.value,
         },
-        "quotes": [asdict(quote) for quote in quotes],
+        "quotes": [
+            {
+                "rank": ranked.rank,
+                "recommended": ranked.rank == 1,
+                "score": round(ranked.score, 6),
+                **asdict(ranked.quote),
+            }
+            for ranked in ranked_quotes
+        ],
         "errors": [{"provider": error.provider, "message": error.message} for error in errors],
     }
     typer.echo(
@@ -170,9 +202,12 @@ def _render_json(
     )
 
 
-def _render_csv(quotes: list[Quote], errors: list[ProviderError]) -> None:
+def _render_csv(ranked_quotes: list[RankedQuote], errors: list[ProviderError]) -> None:
     fieldnames = [
         "status",
+        "rank",
+        "recommended",
+        "score",
         "provider_name",
         "send_amount",
         "send_currency",
@@ -189,8 +224,17 @@ def _render_csv(quotes: list[Quote], errors: list[ProviderError]) -> None:
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
     writer.writeheader()
-    for quote in quotes:
-        writer.writerow({"status": "ok", **asdict(quote), "error": ""})
+    for ranked in ranked_quotes:
+        writer.writerow(
+            {
+                "status": "ok",
+                "rank": ranked.rank,
+                "recommended": ranked.rank == 1,
+                "score": round(ranked.score, 6),
+                **asdict(ranked.quote),
+                "error": "",
+            }
+        )
     for error in errors:
         writer.writerow(
             {
@@ -200,6 +244,38 @@ def _render_csv(quotes: list[Quote], errors: list[ProviderError]) -> None:
             }
         )
     typer.echo(output.getvalue(), nl=False)
+
+
+def _render_recommendation(
+    ranked_quotes: list[RankedQuote],
+    preference: RankingPreference,
+) -> None:
+    best = ranked_quotes[0].quote
+    reason = {
+        RankingPreference.VALUE: "lowest all-in cost against the neutral mid-market rate",
+        RankingPreference.SPEED: "shortest estimated arrival time",
+        RankingPreference.BALANCED: "best normalized mix of all-in cost and arrival time",
+    }[preference]
+    summary = Text()
+    summary.append(f"{best.provider_name}", style="bold green")
+    summary.append(f" is recommended for {reason}.\n")
+    summary.append("Recipient gets ", style="dim")
+    summary.append(f"{best.receive_amount:,.2f} {best.receive_currency}", style="bold")
+    summary.append(f" in about {best.estimated_arrival_hours}h", style="dim")
+    if len(ranked_quotes) > 1:
+        runner_up = ranked_quotes[1].quote
+        receive_delta = best.receive_amount - runner_up.receive_amount
+        eta_delta = best.estimated_arrival_hours - runner_up.estimated_arrival_hours
+        summary.append("\nvs runner-up: ", style="dim")
+        summary.append(f"{receive_delta:+,.2f} {best.receive_currency}")
+        summary.append(f", {eta_delta:+d}h")
+    console.print(
+        Panel(
+            summary,
+            title=f"Recommendation · {preference.value}",
+            border_style="green",
+        )
+    )
 
 
 @app.command()
