@@ -216,6 +216,7 @@ def test_compare_table_separates_context_quotes_warnings_and_model_note() -> Non
     assert "3.5s each" in result.output
     assert "Comparable quotes" in result.output
     assert "At a glance · balanced" in result.output
+    assert "1 valid quote · 1 provider unavailable" in result.output
     assert "Provider warnings · 1" in result.output
     assert "Model note" in result.output
     assert "not a live retail quote" in result.output
