@@ -87,6 +87,9 @@ uv run remit compare --amount 500 --from USD --to EUR --prefer balanced
 # Machine-readable output for scripts and spreadsheets
 uv run remit compare --amount 500 --from USD --to EUR --format json
 uv run remit compare --amount 500 --from USD --to EUR --format csv
+
+# Limit the comparison (repeat --provider to select several)
+uv run remit compare --amount 500 --from USD --to EUR --provider Wise --provider Revolut
 ```
 
 ---

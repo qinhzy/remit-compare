@@ -45,7 +45,9 @@ async def _fetch_all(
     to_currency: str,
     *,
     timeout_seconds: float = _PROVIDER_TIMEOUT_SECONDS,
+    providers: list[BaseProvider] | None = None,
 ) -> list[Quote | ProviderError]:
+    selected_providers = _PROVIDERS if providers is None else providers
     return await asyncio.gather(
         *[
             _fetch_provider(
@@ -55,7 +57,7 @@ async def _fetch_all(
                 to_currency,
                 timeout_seconds=timeout_seconds,
             )
-            for provider in _PROVIDERS
+            for provider in selected_providers
         ]
     )
 
@@ -112,6 +114,11 @@ def compare(
         "--timeout",
         help="Per-provider timeout in seconds (0.1 to 60)",
     ),
+    provider: list[str] | None = typer.Option(
+        None,
+        "--provider",
+        help="Only query this provider; repeat to select more than one",
+    ),
 ) -> None:
     """Compare remittance quotes from all available providers."""
     if not math.isfinite(amount) or amount <= 0:
@@ -124,14 +131,35 @@ def compare(
 
     src = _normalize_currency(from_currency, "--from")
     dst = _normalize_currency(to_currency, "--to")
+    selected_providers = _select_providers(provider)
     if output_format is OutputFormat.TABLE:
-        console.print(f"\nFetching quotes: [bold]{amount} {src} → {dst}[/bold]\n")
+        provider_names = ", ".join(_provider_name(item) for item in selected_providers)
+        console.print(
+            f"\nFetching quotes: [bold]{amount} {src} → {dst}[/bold]"
+            f" · [dim]{provider_names}[/dim]\n"
+        )
 
     if output_format is OutputFormat.TABLE and console.is_terminal:
         with console.status("Contacting providers…", spinner="dots"):
-            results = asyncio.run(_fetch_all(amount, src, dst, timeout_seconds=timeout))
+            results = asyncio.run(
+                _fetch_all(
+                    amount,
+                    src,
+                    dst,
+                    timeout_seconds=timeout,
+                    providers=selected_providers,
+                )
+            )
     else:
-        results = asyncio.run(_fetch_all(amount, src, dst, timeout_seconds=timeout))
+        results = asyncio.run(
+            _fetch_all(
+                amount,
+                src,
+                dst,
+                timeout_seconds=timeout,
+                providers=selected_providers,
+            )
+        )
 
     ranked_quotes = rank_quotes([r for r in results if isinstance(r, Quote)], prefer)
     errors = [r for r in results if isinstance(r, ProviderError)]
@@ -321,6 +349,27 @@ def _normalize_currency(value: str, param_hint: str) -> str:
 
 def _provider_name(provider: BaseProvider) -> str:
     return provider.__class__.__name__.removesuffix("Provider")
+
+
+def _select_providers(requested: list[str] | None) -> list[BaseProvider]:
+    if not requested:
+        return _PROVIDERS
+
+    available = {_provider_name(provider).casefold(): provider for provider in _PROVIDERS}
+    selected: list[BaseProvider] = []
+    seen: set[str] = set()
+    for raw_name in requested:
+        name = raw_name.strip().casefold()
+        if name not in available:
+            choices = ", ".join(_provider_name(provider) for provider in _PROVIDERS)
+            raise typer.BadParameter(
+                f"unknown provider {raw_name!r}; choose from {choices}",
+                param_hint="--provider",
+            )
+        if name not in seen:
+            selected.append(available[name])
+            seen.add(name)
+    return selected
 
 
 def _validate_quote(

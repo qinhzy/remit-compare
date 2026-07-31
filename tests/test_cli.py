@@ -117,12 +117,55 @@ def test_compare_forwards_custom_provider_timeout() -> None:
         )
 
     assert result.exit_code == 0
-    fetch_all.assert_awaited_once_with(
-        100.0,
-        "USD",
-        "CNY",
-        timeout_seconds=3.5,
-    )
+    fetch_all.assert_awaited_once()
+    assert fetch_all.await_args.args == (100.0, "USD", "CNY")
+    assert fetch_all.await_args.kwargs["timeout_seconds"] == 3.5
+    selected_names = [
+        provider.__class__.__name__ for provider in fetch_all.await_args.kwargs["providers"]
+    ]
+    assert selected_names == [
+        "WiseProvider",
+        "RevolutProvider",
+        "PayPalProvider",
+    ]
+
+
+def test_compare_can_limit_and_deduplicate_providers() -> None:
+    fetch_all = AsyncMock(return_value=[_quote()])
+    with patch("remit_compare.cli._fetch_all", new=fetch_all):
+        result = runner.invoke(
+            app,
+            [
+                "compare",
+                "--amount",
+                "100",
+                "--provider",
+                "wise",
+                "--provider",
+                "WISE",
+                "--format",
+                "json",
+            ],
+        )
+
+    assert result.exit_code == 0
+    selected = fetch_all.await_args.kwargs["providers"]
+    assert [provider.__class__.__name__ for provider in selected] == ["WiseProvider"]
+
+
+def test_compare_rejects_unknown_provider_before_fetching() -> None:
+    fetch_all = AsyncMock(return_value=[])
+    with patch("remit_compare.cli._fetch_all", new=fetch_all):
+        result = runner.invoke(
+            app,
+            ["compare", "--amount", "100", "--provider", "Unknown"],
+        )
+
+    assert result.exit_code != 0
+    assert "unknown provider 'Unknown'" in result.output
+    assert "Wise" in result.output
+    assert "Revolut, PayPal" in result.output
+    fetch_all.assert_not_awaited()
 
 
 def test_compare_table_treats_provider_markup_as_plain_text() -> None:
