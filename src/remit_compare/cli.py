@@ -183,35 +183,53 @@ def _render_table(
     errors: list[ProviderError],
     preference: RankingPreference,
 ) -> None:
+    density = "narrow" if console.width < 78 else "compact" if console.width < 112 else "full"
     table = Table(
         title="Comparable quotes",
         title_style="bold",
         show_header=True,
         header_style="bold cyan",
         show_lines=False,
+        caption=(
+            "Compact layout · use --format json or csv for every quote field."
+            if density != "full"
+            else None
+        ),
+        caption_style="dim",
     )
     table.add_column("Rank", justify="center", width=6)
     table.add_column("Provider", style="bold", min_width=10)
-    table.add_column("Fee", justify="right", min_width=12)
-    table.add_column("Exchange Rate", justify="right", min_width=14)
+    if density != "narrow":
+        table.add_column("Fee", justify="right", min_width=10)
+    if density == "full":
+        table.add_column("Exchange Rate", justify="right", min_width=14)
     table.add_column("You Receive", justify="right", min_width=16)
-    table.add_column("Total Cost", justify="right", min_width=14)
-    table.add_column("vs Mid-Rate", justify="right", min_width=12)
+    table.add_column("All-in Cost", justify="right", min_width=12)
+    if density != "narrow":
+        table.add_column("vs Mid", justify="right", min_width=9)
     table.add_column("ETA", justify="right", min_width=8)
 
     for ranked in ranked_quotes:
         q = ranked.quote
         markup_pct = f"{q.markup_vs_mid_rate * 100:.2f}%"
-        table.add_row(
+        row: list[str | Text] = [
             "★" if ranked.rank == 1 else str(ranked.rank),
             Text(q.provider_name, style="bold green" if ranked.rank == 1 else None),
-            f"{q.fee:.2f} {q.send_currency}",
-            f"{q.exchange_rate:.4f}",
-            f"{q.receive_amount:,.2f} {q.receive_currency}",
-            f"{q.total_cost_in_send_currency:.2f} {q.send_currency}",
-            markup_pct,
-            f"~{q.estimated_arrival_hours}h",
+        ]
+        if density != "narrow":
+            row.append(f"{q.fee:.2f} {q.send_currency}")
+        if density == "full":
+            row.append(f"{q.exchange_rate:.4f}")
+        row.extend(
+            [
+                f"{q.receive_amount:,.2f} {q.receive_currency}",
+                f"{q.total_cost_in_send_currency:.2f} {q.send_currency}",
+            ]
         )
+        if density != "narrow":
+            row.append(markup_pct)
+        row.append(f"~{q.estimated_arrival_hours}h")
+        table.add_row(*row)
 
     if ranked_quotes:
         console.print(table)

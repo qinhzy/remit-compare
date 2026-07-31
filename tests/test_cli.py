@@ -5,10 +5,17 @@ import json
 from dataclasses import replace
 from unittest.mock import AsyncMock, patch
 
+from rich.console import Console
 from typer.testing import CliRunner
 
-from remit_compare.cli import _fetch_provider, app
-from remit_compare.core import BaseProvider, ProviderError, Quote
+from remit_compare.cli import _fetch_provider, _render_table, app
+from remit_compare.core import (
+    BaseProvider,
+    ProviderError,
+    Quote,
+    RankingPreference,
+    rank_quotes,
+)
 
 runner = CliRunner()
 
@@ -207,6 +214,40 @@ def test_compare_table_separates_context_quotes_warnings_and_model_note() -> Non
     assert "Provider warnings · 1" in result.output
     assert "Model note" in result.output
     assert "not a live retail quote" in result.output
+
+
+def test_compare_table_adapts_to_narrow_and_wide_terminals() -> None:
+    ranked = rank_quotes([_quote()], RankingPreference.VALUE)
+
+    narrow_output = io.StringIO()
+    narrow_console = Console(
+        file=narrow_output,
+        width=68,
+        color_system=None,
+        force_terminal=False,
+    )
+    with patch("remit_compare.cli.console", narrow_console):
+        _render_table(ranked, [], RankingPreference.VALUE)
+
+    narrow_text = narrow_output.getvalue()
+    assert "You Receive" in narrow_text
+    assert "All-in Cost" in narrow_text
+    assert "Exchange Rate" not in narrow_text
+    assert "Compact layout" in narrow_text
+
+    wide_output = io.StringIO()
+    wide_console = Console(
+        file=wide_output,
+        width=140,
+        color_system=None,
+        force_terminal=False,
+    )
+    with patch("remit_compare.cli.console", wide_console):
+        _render_table(ranked, [], RankingPreference.VALUE)
+
+    wide_text = wide_output.getvalue()
+    assert "Exchange Rate" in wide_text
+    assert "Compact layout" not in wide_text
 
 
 def test_compare_returns_nonzero_when_every_provider_fails() -> None:
