@@ -233,7 +233,7 @@ def _render_table(
 
     if ranked_quotes:
         console.print(table)
-        _render_recommendation(ranked_quotes, preference)
+        _render_recommendation(ranked_quotes, preference, len(errors))
     else:
         console.print(
             Panel(
@@ -386,6 +386,7 @@ def _render_csv(ranked_quotes: list[RankedQuote], errors: list[ProviderError]) -
 def _render_recommendation(
     ranked_quotes: list[RankedQuote],
     preference: RankingPreference,
+    unavailable_count: int,
 ) -> None:
     best = ranked_quotes[0].quote
     reason = {
@@ -408,6 +409,16 @@ def _render_recommendation(
         f" · fee {best.fee:,.2f} · {best.markup_vs_mid_rate * 100:.2f}% vs mid-rate",
         style="dim",
     )
+    valid_label = "quote" if len(ranked_quotes) == 1 else "quotes"
+    summary.append("\nCoverage  ", style="dim")
+    summary.append(f"{len(ranked_quotes)} valid {valid_label}", style="bold")
+    if unavailable_count:
+        provider_label = "provider" if unavailable_count == 1 else "providers"
+        summary.append(" · ", style="dim")
+        summary.append(
+            f"{unavailable_count} {provider_label} unavailable",
+            style="yellow",
+        )
     if len(ranked_quotes) > 1:
         runner_up = ranked_quotes[1].quote
         summary.append("\nCompared with ", style="dim")
