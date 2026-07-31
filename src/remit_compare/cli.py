@@ -410,11 +410,10 @@ def _render_recommendation(
     )
     if len(ranked_quotes) > 1:
         runner_up = ranked_quotes[1].quote
-        receive_delta = best.receive_amount - runner_up.receive_amount
-        eta_delta = best.estimated_arrival_hours - runner_up.estimated_arrival_hours
-        summary.append("\nvs runner-up: ", style="dim")
-        summary.append(f"{receive_delta:+,.2f} {best.receive_currency}")
-        summary.append(f", {eta_delta:+d}h")
+        summary.append("\nCompared with ", style="dim")
+        summary.append(runner_up.provider_name, style="bold")
+        summary.append(": ", style="dim")
+        summary.append(_format_runner_up_tradeoff(best, runner_up))
     console.print(
         Panel(
             summary,
@@ -422,6 +421,25 @@ def _render_recommendation(
             border_style="green",
         )
     )
+
+
+def _format_runner_up_tradeoff(best: Quote, runner_up: Quote) -> str:
+    receive_delta = best.receive_amount - runner_up.receive_amount
+    if math.isclose(receive_delta, 0, rel_tol=0, abs_tol=0.005):
+        receive_comparison = "same recipient amount"
+    else:
+        direction = "more" if receive_delta > 0 else "less"
+        receive_comparison = (
+            f"{abs(receive_delta):,.2f} {best.receive_currency} {direction} to recipient"
+        )
+
+    eta_delta = best.estimated_arrival_hours - runner_up.estimated_arrival_hours
+    if eta_delta == 0:
+        eta_comparison = "same ETA"
+    else:
+        direction = "slower" if eta_delta > 0 else "faster"
+        eta_comparison = f"{abs(eta_delta)}h {direction}"
+    return f"{receive_comparison} · {eta_comparison}"
 
 
 @app.command()

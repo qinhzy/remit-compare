@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock, patch
 from rich.console import Console
 from typer.testing import CliRunner
 
-from remit_compare.cli import _fetch_provider, _render_table, app
+from remit_compare.cli import (
+    _fetch_provider,
+    _format_runner_up_tradeoff,
+    _render_table,
+    app,
+)
 from remit_compare.core import (
     BaseProvider,
     ProviderError,
@@ -248,6 +253,27 @@ def test_compare_table_adapts_to_narrow_and_wide_terminals() -> None:
     wide_text = wide_output.getvalue()
     assert "Exchange Rate" in wide_text
     assert "Compact layout" not in wide_text
+
+
+def test_runner_up_tradeoff_uses_directional_plain_language() -> None:
+    slower_value = replace(
+        _quote(),
+        provider_name="Value",
+        receive_amount=730,
+        estimated_arrival_hours=48,
+    )
+    faster_runner_up = replace(
+        _quote(),
+        provider_name="Fast",
+        receive_amount=725,
+        estimated_arrival_hours=24,
+    )
+    assert _format_runner_up_tradeoff(slower_value, faster_runner_up) == (
+        "5.00 CNY more to recipient · 24h slower"
+    )
+    assert _format_runner_up_tradeoff(faster_runner_up, slower_value) == (
+        "5.00 CNY less to recipient · 24h faster"
+    )
 
 
 def test_compare_returns_nonzero_when_every_provider_fails() -> None:
