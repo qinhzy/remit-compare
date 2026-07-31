@@ -40,10 +40,23 @@ class OutputFormat(StrEnum):
 
 
 async def _fetch_all(
-    amount: float, from_currency: str, to_currency: str
+    amount: float,
+    from_currency: str,
+    to_currency: str,
+    *,
+    timeout_seconds: float = _PROVIDER_TIMEOUT_SECONDS,
 ) -> list[Quote | ProviderError]:
     return await asyncio.gather(
-        *[_fetch_provider(provider, amount, from_currency, to_currency) for provider in _PROVIDERS]
+        *[
+            _fetch_provider(
+                provider,
+                amount,
+                from_currency,
+                to_currency,
+                timeout_seconds=timeout_seconds,
+            )
+            for provider in _PROVIDERS
+        ]
     )
 
 
@@ -94,17 +107,31 @@ def compare(
         help="Recommendation preference: value, speed, or balanced",
         case_sensitive=False,
     ),
+    timeout: float = typer.Option(
+        _PROVIDER_TIMEOUT_SECONDS,
+        "--timeout",
+        help="Per-provider timeout in seconds (0.1 to 60)",
+    ),
 ) -> None:
     """Compare remittance quotes from all available providers."""
     if not math.isfinite(amount) or amount <= 0:
         raise typer.BadParameter("must be a positive finite number", param_hint="--amount")
+    if not math.isfinite(timeout) or not 0.1 <= timeout <= 60:
+        raise typer.BadParameter(
+            "must be a finite number between 0.1 and 60",
+            param_hint="--timeout",
+        )
 
     src = _normalize_currency(from_currency, "--from")
     dst = _normalize_currency(to_currency, "--to")
     if output_format is OutputFormat.TABLE:
         console.print(f"\nFetching quotes: [bold]{amount} {src} → {dst}[/bold]\n")
 
-    results = asyncio.run(_fetch_all(amount, src, dst))
+    if output_format is OutputFormat.TABLE and console.is_terminal:
+        with console.status("Contacting providers…", spinner="dots"):
+            results = asyncio.run(_fetch_all(amount, src, dst, timeout_seconds=timeout))
+    else:
+        results = asyncio.run(_fetch_all(amount, src, dst, timeout_seconds=timeout))
 
     ranked_quotes = rank_quotes([r for r in results if isinstance(r, Quote)], prefer)
     errors = [r for r in results if isinstance(r, ProviderError)]
@@ -140,7 +167,7 @@ def _render_table(
         markup_pct = f"{q.markup_vs_mid_rate * 100:.2f}%"
         table.add_row(
             "★" if ranked.rank == 1 else str(ranked.rank),
-            f"[bold green]{q.provider_name}[/bold green]" if ranked.rank == 1 else q.provider_name,
+            Text(q.provider_name, style="bold green" if ranked.rank == 1 else None),
             f"{q.fee:.2f} {q.send_currency}",
             f"{q.exchange_rate:.4f}",
             f"{q.receive_amount:,.2f} {q.receive_currency}",
@@ -152,8 +179,8 @@ def _render_table(
     for e in errors:
         table.add_row(
             "—",
-            f"[red]{e.provider}[/red]",
-            f"[red]Error: {str(e)[:45]}[/red]",
+            Text(e.provider, style="red"),
+            Text(f"Error: {str(e)[:45]}", style="red"),
             "",
             "",
             "",

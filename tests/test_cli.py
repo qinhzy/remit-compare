@@ -101,6 +101,43 @@ def test_compare_rejects_non_finite_amount() -> None:
     assert "positive finite number" in result.output
 
 
+def test_compare_rejects_non_finite_timeout() -> None:
+    result = runner.invoke(app, ["compare", "--amount", "100", "--timeout", "nan"])
+
+    assert result.exit_code != 0
+    assert "finite number between 0.1 and 60" in result.output
+
+
+def test_compare_forwards_custom_provider_timeout() -> None:
+    fetch_all = AsyncMock(return_value=[_quote()])
+    with patch("remit_compare.cli._fetch_all", new=fetch_all):
+        result = runner.invoke(
+            app,
+            ["compare", "--amount", "100", "--timeout", "3.5", "--format", "json"],
+        )
+
+    assert result.exit_code == 0
+    fetch_all.assert_awaited_once_with(
+        100.0,
+        "USD",
+        "CNY",
+        timeout_seconds=3.5,
+    )
+
+
+def test_compare_table_treats_provider_markup_as_plain_text() -> None:
+    quote = replace(_quote(), provider_name="Wise [preview]")
+    results = [quote, ProviderError("Pay[Pal]", "offline [retry]")]
+    with patch("remit_compare.cli._fetch_all", new=AsyncMock(return_value=results)):
+        result = runner.invoke(app, ["compare", "--amount", "100"])
+
+    assert result.exit_code == 0
+    assert "Wise [preview]" in result.output
+    assert "Pay[Pal]" in result.output
+    assert "offline" in result.output
+    assert "[retry]" in result.output
+
+
 def test_compare_returns_nonzero_when_every_provider_fails() -> None:
     with patch(
         "remit_compare.cli._fetch_all",
