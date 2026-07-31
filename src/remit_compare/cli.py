@@ -133,10 +133,13 @@ def compare(
     dst = _normalize_currency(to_currency, "--to")
     selected_providers = _select_providers(provider)
     if output_format is OutputFormat.TABLE:
-        provider_names = ", ".join(_provider_name(item) for item in selected_providers)
-        console.print(
-            f"\nFetching quotes: [bold]{amount} {src} → {dst}[/bold]"
-            f" · [dim]{provider_names}[/dim]\n"
+        _render_query_panel(
+            amount=amount,
+            from_currency=src,
+            to_currency=dst,
+            providers=selected_providers,
+            preference=prefer,
+            timeout_seconds=timeout,
         )
 
     if output_format is OutputFormat.TABLE and console.is_terminal:
@@ -180,7 +183,13 @@ def _render_table(
     errors: list[ProviderError],
     preference: RankingPreference,
 ) -> None:
-    table = Table(show_header=True, header_style="bold cyan", show_lines=False)
+    table = Table(
+        title="Comparable quotes",
+        title_style="bold",
+        show_header=True,
+        header_style="bold cyan",
+        show_lines=False,
+    )
     table.add_column("Rank", justify="center", width=6)
     table.add_column("Provider", style="bold", min_width=10)
     table.add_column("Fee", justify="right", min_width=12)
@@ -204,21 +213,76 @@ def _render_table(
             f"~{q.estimated_arrival_hours}h",
         )
 
-    for e in errors:
-        table.add_row(
-            "—",
-            Text(e.provider, style="red"),
-            Text(f"Error: {str(e)[:45]}", style="red"),
-            "",
-            "",
-            "",
-            "",
-            "",
+    if ranked_quotes:
+        console.print(table)
+        _render_recommendation(ranked_quotes, preference)
+    else:
+        console.print(
+            Panel(
+                "No provider returned a valid quote for this request.",
+                title="No comparable quotes",
+                border_style="red",
+            )
         )
 
-    console.print(table)
-    if ranked_quotes:
-        _render_recommendation(ranked_quotes, preference)
+    if errors:
+        _render_provider_warnings(errors)
+
+    console.print(
+        Text(
+            "Model note · Published provider pricing rules and representative delivery times "
+            "are compared with an ECB reference mid-rate. This is not a live retail quote.",
+            style="dim",
+        )
+    )
+
+
+def _render_query_panel(
+    *,
+    amount: float,
+    from_currency: str,
+    to_currency: str,
+    providers: list[BaseProvider],
+    preference: RankingPreference,
+    timeout_seconds: float,
+) -> None:
+    provider_names = ", ".join(_provider_name(provider) for provider in providers)
+    summary = Text()
+    summary.append(f"{amount:,.2f} {from_currency} → {to_currency}", style="bold cyan")
+    summary.append("\n")
+    summary.append("Providers  ", style="dim")
+    summary.append(f"{len(providers)} · {provider_names}")
+    summary.append("\n")
+    summary.append("Priority   ", style="dim")
+    summary.append(preference.value.capitalize())
+    summary.append("   ")
+    summary.append("Timeout  ", style="dim")
+    summary.append(f"{timeout_seconds:g}s each")
+    console.print(
+        Panel(
+            summary,
+            title="Comparison setup",
+            subtitle="Fees · FX impact · delivery estimate",
+            border_style="cyan",
+        )
+    )
+
+
+def _render_provider_warnings(errors: list[ProviderError]) -> None:
+    warnings = Text()
+    for index, error in enumerate(errors):
+        if index:
+            warnings.append("\n")
+        warnings.append(error.provider, style="bold yellow")
+        warnings.append("  ")
+        warnings.append(error.message)
+    console.print(
+        Panel(
+            warnings,
+            title=f"Provider warnings · {len(errors)}",
+            border_style="yellow",
+        )
+    )
 
 
 def _render_json(
@@ -317,6 +381,15 @@ def _render_recommendation(
     summary.append("Recipient gets ", style="dim")
     summary.append(f"{best.receive_amount:,.2f} {best.receive_currency}", style="bold")
     summary.append(f" in about {best.estimated_arrival_hours}h", style="dim")
+    summary.append("\nAll-in cost ", style="dim")
+    summary.append(
+        f"{best.total_cost_in_send_currency:,.2f} {best.send_currency}",
+        style="bold",
+    )
+    summary.append(
+        f" · fee {best.fee:,.2f} · {best.markup_vs_mid_rate * 100:.2f}% vs mid-rate",
+        style="dim",
+    )
     if len(ranked_quotes) > 1:
         runner_up = ranked_quotes[1].quote
         receive_delta = best.receive_amount - runner_up.receive_amount
@@ -327,7 +400,7 @@ def _render_recommendation(
     console.print(
         Panel(
             summary,
-            title=f"Recommendation · {preference.value}",
+            title=f"At a glance · {preference.value}",
             border_style="green",
         )
     )

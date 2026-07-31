@@ -181,6 +181,34 @@ def test_compare_table_treats_provider_markup_as_plain_text() -> None:
     assert "[retry]" in result.output
 
 
+def test_compare_table_separates_context_quotes_warnings_and_model_note() -> None:
+    results = [_quote(), ProviderError("PayPal", "temporarily unavailable")]
+    with patch("remit_compare.cli._fetch_all", new=AsyncMock(return_value=results)):
+        result = runner.invoke(
+            app,
+            [
+                "compare",
+                "--amount",
+                "100",
+                "--prefer",
+                "balanced",
+                "--timeout",
+                "3.5",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert "Comparison setup" in result.output
+    assert "100.00 USD → CNY" in result.output
+    assert "Balanced" in result.output
+    assert "3.5s each" in result.output
+    assert "Comparable quotes" in result.output
+    assert "At a glance · balanced" in result.output
+    assert "Provider warnings · 1" in result.output
+    assert "Model note" in result.output
+    assert "not a live retail quote" in result.output
+
+
 def test_compare_returns_nonzero_when_every_provider_fails() -> None:
     with patch(
         "remit_compare.cli._fetch_all",
