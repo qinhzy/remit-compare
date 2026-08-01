@@ -64,6 +64,17 @@ async def test_get_quote_weekend(weekend_provider: RevolutProvider):
     assert quote.markup_vs_mid_rate == pytest.approx(0.010101, rel=1e-2)
 
 
+async def test_same_currency_quote_does_not_apply_weekend_spread(
+    weekend_provider: RevolutProvider,
+):
+    with patch(_PATCH, new_callable=AsyncMock, return_value=Decimal("1")):
+        quote = await weekend_provider.get_quote(1000.0, "USD", "USD")
+
+    assert quote.exchange_rate == 1.0
+    assert quote.receive_amount == 1000.0
+    assert quote.markup_vs_mid_rate == 0.0
+
+
 async def test_zero_amount_raises_value_error(weekday_provider: RevolutProvider):
     """send_amount=0 raises ValueError before calling get_mid_rate."""
     with pytest.raises(ValueError, match="send_amount must be positive"):

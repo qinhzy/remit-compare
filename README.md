@@ -116,6 +116,7 @@ Known gaps:
 - **Wise corridor variation.** Wise's fixed fee (£0.23 for GBP sends) varies by send currency. A small lookup table covers the most common currencies; others fall back to a £0.50 default.
 - **Revolut plan tiers.** Plus, Premium, and Metal plans carry lower or zero spreads. Only the free Standard plan is modelled.
 - **Weekend FX detection.** The tool reads the current system date (UTC) and applies the appropriate Revolut spread automatically.
+- **Same-currency transfers.** Provider transfer fees still apply, but no FX conversion margin is added when the send and receive currencies match.
 
 ---
 
