@@ -40,7 +40,13 @@ class RevolutProvider(BaseProvider):
             raise ProviderError(_PROVIDER_NAME, str(exc)) from exc
 
         now = self._now or datetime.now(UTC)
-        spread = _fx_spread(now)
+        # Weekend/weekday spreads are conversion costs. Do not charge one
+        # when both sides use the same currency.
+        spread = (
+            Decimal("0")
+            if send_currency.strip().upper() == receive_currency.strip().upper()
+            else _fx_spread(now)
+        )
         effective_rate = float(mid_rate_d * (1 - spread))
         mid_rate = float(mid_rate_d)
 

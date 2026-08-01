@@ -45,6 +45,17 @@ async def test_zero_amount_raises_value_error(provider: PayPalProvider):
         await provider.get_quote(0, "USD", "CNY")
 
 
+async def test_same_currency_quote_does_not_apply_conversion_margin(
+    provider: PayPalProvider,
+):
+    with patch(_PATCH, new_callable=AsyncMock, return_value=Decimal("1")):
+        quote = await provider.get_quote(100.0, "USD", "USD")
+
+    assert quote.exchange_rate == 1.0
+    assert quote.receive_amount == 100.0
+    assert quote.markup_vs_mid_rate == pytest.approx(quote.fee / quote.send_amount)
+
+
 async def test_fx_error_wrapped_as_provider_error(provider: PayPalProvider):
     """ProviderError from get_mid_rate is re-raised under PayPal's name."""
     with patch(_PATCH, new_callable=AsyncMock, side_effect=ProviderError("Frankfurter", "timeout")):

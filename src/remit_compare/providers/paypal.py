@@ -34,7 +34,15 @@ class PayPalProvider(BaseProvider):
             raise ProviderError(_PROVIDER_NAME, str(exc)) from exc
 
         mid_rate = float(mid_rate_d)
-        effective_rate = float(mid_rate_d * (1 - _FX_SPREAD))
+        # A same-currency transfer has no conversion leg, so applying an FX
+        # margin would invent a loss that the published conversion schedule
+        # does not describe. The transfer fee still applies.
+        spread = (
+            Decimal("0")
+            if send_currency.strip().upper() == receive_currency.strip().upper()
+            else _FX_SPREAD
+        )
+        effective_rate = float(mid_rate_d * (1 - spread))
         fee = _paypal_fee(send_amount)
 
         receive_amount = round(send_amount * effective_rate, 2)
